@@ -1,0 +1,348 @@
+---
+title: "Exercício R"
+author: "Amanda Provetti"
+date: "4/13/2020"
+output: html_notebook
+---
+
+```{r}
+install.packages("fpp2")
+library(tidyverse)
+library(dplyr)
+library(fpp2)
+library(ggplot2)
+library(seasonal)
+library(fpp2)
+library(forecast)
+library(fma)
+library(expsmooth)
+```
+
+
+# Parte 1 #
+## 1. Visualização básica de dados ##
+
+Leia o arquivo RDS "us_change". Trate-se de um tibble de variáveis trimestrais contendo as variações percentual no gastos privados com consumo, renda
+disponível, produção, popuplção e taxa de desemprego no Estados Unidos entre
+1970 e 2016. As taxas de variação foram obtidas a partir de em valores reais
+medidos em dólares americanos de 2012.
+
+a) Construa um novo tibble no qual todas as variáveis sejam disponibilizadas
+em número índice, assumindo valor 100 no primeiro trimestre do ano 2000
+(ie 2010Q1 = 100).
+
+```{r}
+#Carrega arquivo
+load(file="./lista_stat_R/us_change.rda")
+
+us_change.nivel = us_change
+
+#Índice da linha correspondente ao primeiro trimestre de 2000.
+line_index <- which(us_change.nivel$Quarter == "2000-01-01")[1]
+
+for(i in 2:length(us_change.nivel)){
+  if (i == line_index) {
+    us_change.nivel$Consumption[i] <-  100;
+    us_change.nivel$Income[i] <-  100;
+    us_change.nivel$Production[i] <-  100;
+    us_change.nivel$Savings[i] <-  100;
+    us_change.nivel$Unemployment[i] <-  100;
+  } else {
+      us_change.nivel$Consumption[i] <- (1 + us_change$Consumption[i]/100) * us_change.nivel$Consumption[i-1]
+      us_change.nivel$Production[i] <- (1 + us_change$Production[i]/100) * us_change.nivel$Production[i-1]
+      us_change.nivel$Income[i] <- (1 + us_change$Income[i]/100) * us_change.nivel$Income[i-1]
+      us_change.nivel$Savings[i] <- (1 + us_change$Savings[i]/100) * us_change.nivel$Savings[i-1]
+      us_change.nivel$Unemployment[i] <-(1 + us_change$Unemployment[i]/100) * us_change.nivel$Unemployment[i-1]
+  }
+
+}
+```
+
+
+
+b) Explore a correlação entre as variáveis. Qual a diferença entre se calcular a
+correlação das variáveis em número índice e em taxa de variação?
+```{r}
+correl <-  cor(us_change.nivel %>% 
+      select(-"Quarter")) %>% round(2) 
+
+#print(correl)
+corrplot::corrplot(correl, 
+         type = "upper",
+         tl.col = "black",
+   )
+```
+
+
+c) Construa gráficos que contribuam em seu entendimento sobre a dinâmica
+de cada variável do dataset, bem como as relações entre elas. Assim, por
+exemplo, como ponto de partida plote gráficos de dispersão conjunta das
+variáveis, bem como suas evoluções ao longo do tempo. Sinta-se livre para
+complementar tal caracterização com todo e qualquer arsenal analítico que
+julgue interessante.
+```{r}
+graf_disp <- ggplot(us_change.nivel, aes(x=Quarter, y=Income)) +
+  geom_point() +
+  labs(subtitle = "Renda por ano",
+       y = "Renda", x = "Ano")
+ 
+plot(graf_disp)
+```
+
+```{r}
+graf_disp <- ggplot(us_change.nivel, aes(x=Consumption, y=Income)) +
+  geom_point(aes(col=Income)) +
+  geom_smooth(method="loess") +
+  labs(subtitle = "Consumo x Renda",
+       y = "Renda", x = "Consumo")
+ 
+plot(graf_disp)
+```
+
+
+```{r}
+us_change.plot <-  us_change.nivel %>% 
+  pivot_longer(
+    cols =  us_change %>% 
+      select(-Quarter) %>% 
+      colnames()
+  )
+
+us_change.plot %>%
+  ggplot( aes(x = Quarter, y = value, color = name)) +
+  geom_line() +
+  theme_bw() +
+  labs(subtitle = "Variação", x = "Ano")
+```
+
+d) A partir das visualizações obtidas no item anterior, que tipo de aprendizado
+você consegue extrair acerca de (i) evolução das variáveis ao longo do tempo
+e (ii) das correlações nas dinâmicas das diversas variáveis?
+
+```{r}
+# Aumento do consumo baseado no aumento da renda
+graf_disp <- ggplot(us_change.nivel, aes(x=Consumption, y=Income)) +
+  geom_point(aes(col=Income)) +
+  geom_smooth(method="loess") +
+  labs(subtitle = "Consumo x Renda",
+       y = "Renda", x = "Consumo")
+ 
+plot(graf_disp)
+```
+
+
+e) Você consegue identificar, visualmente, alguns movimentos bruscos/atípicos/anômalos
+na evolução das séries? Tente destacar tais pontos nos gráficos construídos
+```{r}
+outlier <- boxplot.stats(us_change$Income)$out
+
+outlier_graph <-  
+  ggplot(us_change, aes(x=Quarter)) +
+  geom_point(aes(y=Income, color = ifelse((Income %in% outlier),
+                                           "Renda (outlier)", 
+                                           "Renda"))) +
+  labs(subtitle = "Renda Desvio Padrão",
+       y = "Renda", 
+       x = "Ano", 
+       color = "Índice")
+plot(outlier_graph)
+```
+
+
+## 2. Séries de tempo, ciclo, sazonalidade e tendência ##
+O arquivo "retail.xlsx" contém informações sobre vendas mensais de varejo para
+diversos estados da Austrália.
+
+a) Leia os dados contidos no arquivo "retail.xlsx". Qual cuidado adicional você
+precisou ter ao realizar essa importação?
+
+Foi preciso limpar o nomes das colunas utilizando a função **clean_names()**;
+
+```{r}
+retail <- readxl::read_excel(path = "./lista_stat_R/retail.xlsx")
+retail <- janitor::clean_names(retail)
+
+print(retail)
+```
+
+
+b) Selecione uma das variáveis e as converta para o formato "time series".
+```{r}
+turnover_new_south_wales_food_retailing.ts <- retail %>% 
+  select(c("turnover_new_south_wales_food_retailing")  ) %>% 
+  ts(
+    start=c(2010, 1), end=c(2020, 12),
+    
+    frequency = 12
+  )
+
+turnover_new_south_wales_food_retailing.ts
+```
+
+c) Explore a série escolhida por meio da construção de gráficos. Em particular,
+se estiver utilizando o R, teste as funções ggseasonplot e ggmonthplot. O que
+você consegue identificar em termos de ciclo, sazonalidade e tendência?
+
+O varejo de alimentos sempre aumenta em Outubro, é variável no restante do ano.
+```{r}
+ggseasonplot(turnover_new_south_wales_food_retailing.ts, year.labels=TRUE, year.labels.left=TRUE) +
+ylab("") +
+ggtitle("Seasonal Plot: Volume de negócios do varejo de alimentos ")
+```
+
+```{r}
+ggmonthplot(turnover_new_south_wales_food_retailing.ts, year.labels=TRUE, year.labels.left=TRUE) +
+ylab("") +
+ggtitle("Month Plot: Volume de negócios do varejo de alimentos")
+```
+
+
+d) Decomponha a série utilizando o método X11. Ele revela algum outlier ou
+padrões anômalos não identificados anteriormente?
+```{r}
+turnover_new_south_wales_food_retailing.sa <- seas(x =  turnover_new_south_wales_food_retailing.ts, transform.function="none", x11="")
+
+
+autoplot(turnover_new_south_wales_food_retailing.sa,facet=T)
+
+```
+
+```{r}
+outlier(turnover_new_south_wales_food_retailing.sa)
+```
+
+# Parte 2#
+A ideia desta segunda parte da avaliação é propiciar aos alunos oportunidade de
+aplicar todo o ferramental aprendido em datasets razoavelmente ricos e propícios
+à analises descritivas. Aqui não será pedido nenhum tipo de análise específica,
+mas sim que o aluno explore ao máximo as bases, de modo a transformar dado
+em informação útil e de fácil absorção! Todo tipo de insight e análise que puder
+ser retirado das bases é útil, pois ajuda a compreender fenômenos implícitos nos
+dados. Usem e abusem dos pacotes e funções aprendidas, do Google e do material
+complementar recomendado no material.
+Ambos datasets fazem parte do chamado "Tidy Tuesday", um evento semanal
+onde a cada terça-feira um novo dataset e disponibilizado e membro da comunidade R fazem análises e/ou aplicam visualizações interessantes e novas.
+
+### 3. Dataset Spotify - package "spotifyr"###
+Os autores do package compilaram mais de 5.000 músicas de gêneros e subgêneros
+distintos. O descritivo do dataset, bem como a obtenção dos dados em si, está
+toda no seguinte repositório: <https://github.com/rfordatascience/tidytuesday/
+blob/master/data/2020/2020-01-21/readme.md>
+
+a) Use e abuse de todo o ferramental aprendido (e também do que será aprendido, por ventura, em consultas ao Google). A avaliação será feita tanto em
+cima da riqueza do código em si (em termos do ferramental usado) quanto
+do aprofundamento analítico na exploração dos dados e obtenção de informações e relações úteis.
+
+```{r}
+spotify_songs <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-01-21/spotify_songs.csv')
+
+spotify_songs <- spotify_songs %>% mutate(track_popularity = as.numeric(track_popularity) )
+```
+
+Gêneros no dataset
+```{r}
+genre <- janitor::tabyl(spotify_songs$playlist_genre)
+
+genre
+```
+
+Artistas no dataset
+```{r}
+artists <- spotify_songs %>% count(substr(track_artist, 0, 10))
+
+
+artists
+```
+
+
+```{r}
+spotify_songs %>% group_by(playlist_genre) %>% 
+  summarise(pop = sum(track_popularity) / n()) %>% 
+  ungroup() %>%
+  ggplot() + geom_col(aes(y=pop, x = playlist_genre)) +
+  labs(title = "Popularidade por gênero",
+       y = "Popularidade",
+       x = "Gênero")
+```
+
+
+```{r,fig.height=20, fig.width=12}
+spotify_songs %>% filter (track_popularity > 90)  %>% group_by(track_artist, playlist_genre) %>%
+  summarise(pop = sum(track_popularity) / n()) %>%
+  arrange(pop) %>% 
+  ungroup() %>%
+  ggplot() + geom_col(aes(y = track_artist, x = pop)) + 
+  facet_wrap(~playlist_genre, scales="free", ncol = 2) +
+  labs(title = "Popularidade de artista por gênero",
+       subtitle = "Com popularidade maior que 90",
+       y = "Artista",
+       x = "Gênero")
+```
+
+
+
+## 4. Video Games Dataset ##
+O dataset contém dados como a data de lançamento, desenvolvedor, tempo médio
+jogado, etc. O descritivo do dataset, bem como a obtenção dos dados em si, está
+toda no seguinte repositório: <https://github.com/rfordatascience/tidytuesday/
+tree/master/data/2019/2019-07-30>
+
+a) Use e abuse de todo o ferramental aprendido (e também do que será aprendido, por ventura, em consultas ao Google). A avaliação será feita tanto em cima da riqueza do código em si (em termos do ferramental usado) quanto do aprofundamento analítico na exploração dos dados e obtenção de informações e relações úteis.
+
+```{r}
+# clean dataset from lizawood's github
+url <- "https://raw.githubusercontent.com/lizawood/apps-and-games/master/PC_Games/PCgames_2004_2018_raw.csv"
+
+# read in raw data
+raw_df <- url %>% 
+  read_csv() %>% 
+  janitor::clean_names() 
+
+# clean up some of the factors and playtime data
+clean_df <- raw_df %>% 
+  mutate(price = as.numeric(price),
+         score_rank = word(score_rank_userscore_metascore, 1),
+         average_playtime = word(playtime_median, 1),
+         median_playtime = word(playtime_median, 2),
+         median_playtime = str_remove(median_playtime, "\\("),
+         median_playtime = str_remove(median_playtime, "\\)"),
+         average_playtime = 60 * as.numeric(str_sub(average_playtime, 1, 2)) +
+           as.numeric(str_sub(average_playtime, 4, 5)),
+         median_playtime = 60 * as.numeric(str_sub(median_playtime, 1, 2)) +
+           as.numeric(str_sub(median_playtime, 4, 5)),
+         metascore = as.double(str_sub(score_rank_userscore_metascore, start = -4, end = -3))) %>% 
+  select(-score_rank_userscore_metascore, -score_rank, -playtime_median) %>% 
+  rename(publisher = publisher_s, developer = developer_s)
+```
+
+Preço médio
+```{r}
+summary(clean_df$price)
+```
+
+Jogos por desenvolvedor
+```{r}
+df_cleaned_year <- clean_df %>% 
+  mutate(year = substr(release_date,
+                            (nchar(release_date)+1)-4,nchar(release_date)))
+totalByDev <- df_cleaned_year %>%
+   filter( is.na(developer) == FALSE) %>% 
+  group_by(developer, year) %>% 
+  summarise(total =  n()) %>% 
+  arrange(desc(total)) 
+
+totalByDev
+```
+
+```{r}
+totalByDev %>% 
+  group_by(year) %>% 
+  summarise(total =  n()) %>% 
+  arrange(desc(total)) %>% 
+  ggplot() + geom_col(aes(y=year, x = total)) +
+  labs(title = "Jogos lançados por ano",
+       y = "Total",
+       x = "Ano")
+  
+```
+
